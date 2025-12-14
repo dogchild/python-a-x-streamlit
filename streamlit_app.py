@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Python-A-X
-提供网络链接的 Python 工具
+Python-A-X Streamlit App
+提供网络链接的 Python 工具 (Streamlit版)
 原作者: dogchild
 """
 
@@ -12,12 +12,16 @@ import base64
 import platform
 import stat
 import re
+import threading
+import time
+import psutil
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
 
 import httpx
 import aiofiles
+import streamlit as st
 from fastapi import FastAPI, Response
 import uvicorn
 from dotenv import load_dotenv
@@ -40,40 +44,20 @@ MLKEM_S = os.getenv('MLKEM_S', 'mlkem768x25519plus.native.600s.ugygldXvD2pi5St4X
 MLKEM_C = os.getenv('MLKEM_C', 'mlkem768x25519plus.native.0rtt.h7xFrUkiWbhXfCNmehc209OOlXhUaPM-2bgKIQyRRLt7WXmEJFsY64QT8se8HcGNLNkKPlTGS1W5XIgRZfFVuNqATbcyuNa7O9BveTB5GaESadgUsWMCs-ugCyTG3WNonYlL0otGzxMEhnohNnkTnoCchQgVULxZAGZW8oYbaNcS-UUZJGhoSvBbz4gZj8RVqDQhd1ReD1E4IMFd2tANlCANZcyZJKykjPdCrqRxiDsxSHGwB6kB4UikaOEAzCSgXNZcJleylvJVkkg54sh4pnGfC0pXp2GjiZFe_cIFRGJJr4mlaCSHphsvecYzctZQiYw3p4xxxRsCtgpUQ2KWReg6YmZCBDy-ckYg8pNp5LtcZBRWE9nDZKVnbpOqL0s442XLqniTLuI1exkbjMJEz-vLIZSNXDA6DieyFyKOUPtFbjcutoq9QGxICAgmvpGn0Qw_JBVoBsJZqwG43wiBcedwBJotJ_SV7klDZEiF-Nud3OaNcmnJWDcEf3O2BiNknpcKbHmrstg8Y0y5kjtfMrau9NDNoiVidNtKtYwQXHA8ndVo15YutaGKs-N9YCavxYUX62fAunulLJAuc6KsDXs_rDlhrFMfxhumq6kNpZxC0vJsvVSQRcVmd-pi8gseXAUOY_zD2paGv2JEQilTtqlrh9cCn-GCP_cYErud-QSsRyCIz5dpGZdEggrPumAlQ4C5j4JniKYaELScBWQWK6E1Y1SPhQFsLgxJFSC9w0pNmIyfleSEEXcd9uOPdVvF0QpJ04dHHKO4r6ekTkkM4XZc7lp1pTwvB8B-tqmjl9Fu4kcgZ0PCQDqGLeq9U3kJUhBsxLhCH8zNzjtaeGooPZAdw_eCJ8dsQmXByaiAs4ofocko4HEfiWh1urqO5dxJMuS3f7WPs6BWthW5vXCuA3mJ_Go87GUY0XEilpE3OJvNNLiBoidadIFnOFI_fqfGGNhxseEGjdF1cLlEtpdLQjWxxcB1BNudQAdWc6tO1StI0KVQwQeFOYS7v3LK2usU1qQmH6UIbmiN5TtmVxodk8FM3xE6fvZZXON1POM_08KPU8QcoYATmUu_sRaWGrlFmTY59zZNoASc7zPHxJm66ZYOiVFcsSh-pmenuzCCa9UcvUSR-OxLNvi9XoZrWOy6n8iP26gnUmcygTQB0phUajxa6fa_85JF6adgD8ylDXiuGpbOchwokbwGbTUMGwmsBSnKDWKqRffDUPq-pZxQOXuwlblsEWUU87DJFHwI2eVKj9sjYVBzm7onKZpt9yRwCEUajIIggzwDRDQwlPil5MS1vWFd4TsIO4oLtbKrR3YK3Xp-kIeZBUMJBliBJfld0vDJNFMnWKXAE_gPySFO9blD8lGgsHKSSYCgF1VUx6B0nsS1nIPMIFvKB6CwKbeHh0gpR9YepBFm99ZAkRRH2Gu0Xtd59fWoOHRFDYVTWtWTA8gY0oxzE4gcFyePjxw0-7Ax2-gg_fnJZia1fwEAZmZnIAg28OAlRutOPVfLFDBIplSb2NCnsfh6tDcruSt6bZhPlwwDS8pggEKdudxNBkNPYeICnErthTVl5qYB_gQ')
 M_AUTH = os.getenv('M_AUTH', 'ML-KEM-768, Post-Quantum')
 
-
+# --- Global State ---
 
 current_domain: Optional[str] = None
 current_links_content: Optional[str] = None
 running_processes = []
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print("Application startup: Starting setup in background...", flush=True)
-    asyncio.create_task(setup_services())
-    yield
-    print("Application shutdown: Cleaning up processes...", flush=True)
-    await cleanup_processes()
-
-app = FastAPI(lifespan=lifespan)
-
-@app.get("/")
-async def root():
-    return "Hello world!"
-
-
-@app.get(f"/{S_PATH}")
-async def get_links():
-    return Response(content=current_links_content or "Links not ready", media_type="text/plain")
+# --- Service Helper Functions ---
 
 def create_directory():
     if not Path(FILE_PATH).exists():
         Path(FILE_PATH).mkdir(parents=True, exist_ok=True)
         print(f"{FILE_PATH} is created", flush=True)
-    else:
-        print(f"{FILE_PATH} already exists", flush=True)
 
 def cleanup_old_files():
-    """清理旧的日志和链接文件"""
     for file in ['sub.txt', 'boot.log']:
         try:
             (Path(FILE_PATH) / file).unlink(missing_ok=True)
@@ -81,31 +65,25 @@ def cleanup_old_files():
             pass
 
 async def generate_front_config():
-    """生成 front 服务配置文件"""
     p_v = base64.b64decode('dmxlc3M=').decode('utf-8')
-    p_f = base64.b64decode('eHRscy1ycHJ4LXZpc2lvbg==').decode('utf-8')
-    o_f = base64.b64decode('ZnJlZWRvbQ==').decode('utf-8')
-    o_b = base64.b64decode('YmxhY2tob2xl').decode('utf-8')
     config = {
         "log": {"access": "/dev/null", "error": "/dev/null", "loglevel": "none"},
         "inbounds": [
-            {"port": A_PORT, "protocol": p_v, "settings": {"clients": [{"id": UID, "flow": p_f}], "decryption": "none", "fallbacks": [{"dest": 3001}, {"path": "/vla", "dest": 3002}]}, "streamSettings": {"network": "tcp"}},
+            {"port": A_PORT, "protocol": p_v, "settings": {"clients": [{"id": UID, "flow": base64.b64decode('eHRscy1ycHJ4LXZpc2lvbg==').decode('utf-8')}], "decryption": "none", "fallbacks": [{"dest": 3001}, {"path": "/vla", "dest": 3002}]}, "streamSettings": {"network": "tcp"}},
             {"port": 3001, "listen": "127.0.0.1", "protocol": p_v, "settings": {"clients": [{"id": UID}], "decryption": "none"}, "streamSettings": {"network": "tcp", "security": "none"}},
             {"port": 3002, "listen": "127.0.0.1", "protocol": p_v, "settings": {"clients": [{"id": UID}], "decryption": MLKEM_S, "selectedAuth": M_AUTH}, "streamSettings": {"network": "ws", "security": "none", "wsSettings": {"path": "/vla"}}, "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "metadataOnly": False}}
         ],
         "dns": {"servers": ["https+local://8.8.8.8/dns-query"]},
-        "outbounds": [{"protocol": o_f, "tag": "direct"}, {"protocol": o_b, "tag": "block"}]
+        "outbounds": [{"protocol": base64.b64decode('ZnJlZWRvbQ==').decode('utf-8'), "tag": "direct"}, {"protocol": base64.b64decode('YmxhY2tob2xl').decode('utf-8'), "tag": "block"}]
     }
     async with aiofiles.open(Path(FILE_PATH) / 'config.json', 'w') as f:
         await f.write(json.dumps(config, indent=2))
 
 def get_system_architecture():
-    """检测系统架构，返回arm或amd"""
     arch = platform.machine().lower()
     return 'arm' if arch in ['arm', 'arm64', 'aarch64'] else 'amd'
 
 def get_files_for_architecture(architecture):
-    """根据架构返回需要下载的文件列表"""
     if architecture == 'arm':
         return [{"fileName": "front", "fileUrl": "https://arm.dogchild.eu.org/front"}, {"fileName": "backend", "fileUrl": "https://arm.dogchild.eu.org/backend"}]
     else:
@@ -115,74 +93,42 @@ async def download_file(file_name, file_url):
     file_path = Path(FILE_PATH) / file_name
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # 一次GET请求同时实现流式下载和获取文件大小信息
-            expected_size = None
-            
             async with aiofiles.open(file_path, 'wb') as f:
-                # stream=True 参数启用流式下载
                 async with client.stream('GET', file_url) as response:
                     response.raise_for_status()
-                    
-                    # 从GET响应头中获取预期的文件大小
-                    content_length = response.headers.get('Content-Length')
-                    if content_length:
-                        expected_size = int(content_length)
-                    
-                    # 逐块写入文件
-                    async for chunk in response.aiter_bytes(chunk_size=8192):  # 8KB chunks
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
                         if chunk:
                             await f.write(chunk)
-            
-            # 校验下载的文件大小是否与预期一致
-            if expected_size:
-                # 检查硬盘上已保存文件的实际大小
-                actual_file_size = file_path.stat().st_size
-                if actual_file_size != expected_size:
-                    print(f"文件大小不匹配: {file_name} - 预期: {expected_size} 字节, 实际: {actual_file_size} 字节", flush=True)
-                    # 删除不完整的文件
-                    if file_path.exists():
-                        file_path.unlink()
-                    return False
-            
             print(f"成功下载 {file_name}", flush=True)
             return True
     except Exception as e:
         print(f"Download {file_name} failed: {e}", flush=True)
-        # 在异常时删除可能已创建的不完整文件
         if file_path.exists():
             try:
                 file_path.unlink()
-                print(f"Removed incomplete file: {file_path}", flush=True)
-            except Exception as delete_error:
-                print(f"Failed to remove incomplete file {file_path}: {delete_error}", flush=True)
+            except:
+                pass
         return False
 
 async def download_files_and_run():
-    """下载 front 和 backend 程序文件并设置执行权限"""
     architecture = get_system_architecture()
     all_files = get_files_for_architecture(architecture)
     if not all_files:
-        print("Can't find files for current architecture", flush=True)
         return False
     
     files_to_download = [f for f in all_files if not (Path(FILE_PATH) / f["fileName"]).exists()]
-    if not files_to_download:
-        print("All required files already exist, skipping download", flush=True)
-    else:
+    if files_to_download:
         results = await asyncio.gather(*[download_file(f["fileName"], f["fileUrl"]) for f in files_to_download])
         if not all(results):
-            print("Error downloading files", flush=True)
             return False
-    
-    # 设置可执行权限
+            
     for file_name in ['front', 'backend']:
         file_path = Path(FILE_PATH) / file_name
         if file_path.exists():
             try:
                 file_path.chmod(stat.S_IRWXU | stat.S_IRWXG | stat.S_IROTH | stat.S_IXOTH)
-                print(f"Empowerment success for {file_path}: 775", flush=True)
-            except Exception as e:
-                print(f"Empowerment failed for {file_path}: {e}", flush=True)
+            except:
+                pass
     return True
 
 async def start_front():
@@ -193,51 +139,39 @@ async def start_front():
             str(front_path), '-c', str(config_path),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         running_processes.append(process)
-        print('front is running', flush=True)
-        await asyncio.sleep(1)
         return process
     except Exception as e:
         print(f"front running error: {e}", flush=True)
         return None
 
-
-
 async def start_backend():
-    """启动后端服务，支持固定凭证和临时连接两种模式"""
     backend_path = Path(FILE_PATH) / 'backend'
     if not backend_path.exists():
-        print("Backend program not found", flush=True)
         return None
     
-    # 根据A_AUTH和A_DOMAIN类型选择启动参数
     c_t = base64.b64decode('dHVubmVs').decode('utf-8')
-    if A_AUTH and A_DOMAIN and re.match(r'^[A-Z0-9a-z=]{120,250}$', A_AUTH):  # 固定凭证模式（需要同时配置域名和凭证）
+    if A_AUTH and A_DOMAIN and re.match(r'^[A-Z0-9a-z=]{120,250}$', A_AUTH):
         args = [c_t, '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', 'run', '--token', A_AUTH]
-    else:  # 临时模式
+    else:
         args = [c_t, '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', '--logfile', str(Path(FILE_PATH) / 'boot.log'), '--loglevel', 'info', '--url', f'http://localhost:{A_PORT}']
     
     try:
         process = await asyncio.create_subprocess_exec(str(backend_path), *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         running_processes.append(process)
-        print('backend is running', flush=True)
-        await asyncio.sleep(2)
         return process
     except Exception as e:
         print(f"Error executing backend: {e}", flush=True)
         return None
 
 async def extract_domains():
-    """提取服务域名，优先使用固定域名，否则从日志中解析"""
     global current_domain
     if A_AUTH and A_DOMAIN:
         current_domain = A_DOMAIN
-        print(f'Service Domain: {current_domain}', flush=True)
         return current_domain
     
-    # 从boot.log中提取连接域名
     boot_log_path = Path(FILE_PATH) / 'boot.log'
     tcf_domain = base64.b64decode('dHJ5Y2xvdWRmbGFyZS5jb20=').decode('utf-8')
-    for attempt in range(15):
+    for _ in range(15):
         try:
             if boot_log_path.exists():
                 async with aiofiles.open(boot_log_path, 'r') as f:
@@ -245,37 +179,29 @@ async def extract_domains():
                 matches = re.findall(rf'https?://([^\]*{tcf_domain})/?', content)
                 if matches:
                     current_domain = matches[0]
-                    print(f'Service Domain: {current_domain}', flush=True)
                     return current_domain
         except:
             pass
         await asyncio.sleep(2)
-    print('Service Domain not found', flush=True)
     return None
 
 async def get_isp_info():
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            url = 'https://ipapi.co/json/'
-            response = await client.get(url)
-            response.raise_for_status()
+            response = await client.get('https://ipapi.co/json/')
             data = response.json()
             return f"{data.get('country_code', 'Unknown')}-{data.get('org', 'ISP')}".replace(' ', '_')
-    except Exception as e:
-        print(f"Error fetching meta data: {e}", flush=True)
+    except:
         return 'Unknown-ISP'
 
 async def generate_links(a_domain):
-    """生成网络链接并保存为Base64编码"""
     global current_links_content
     try:
         isp = await get_isp_info()
         p_v = base64.b64decode('dmxlc3M=').decode('utf-8')
         v_link = f"{p_v}://{UID}@{CIP}:{CPORT}?encryption={MLKEM_C}&security=tls&sni={a_domain}&fp=chrome&type=ws&host={a_domain}&path=%2Fvla%3Fed%3D2560#{NAME}-{isp}"
-        
         sub_content = f"{v_link}\n"
         current_links_content = base64.b64encode(sub_content.encode()).decode()
-        
         async with aiofiles.open(Path(FILE_PATH) / 'sub.txt', 'w') as f:
             await f.write(current_links_content)
         
@@ -283,7 +209,7 @@ async def generate_links(a_domain):
         print(current_links_content, flush=True)
         return current_links_content
     except Exception as e:
-        print(f"Error generating links: {e}", flush=True)
+        print(f"Link generation failed: {e}")
         return None
 
 async def cleanup_processes():
@@ -301,8 +227,7 @@ async def cleanup_processes():
 
 async def setup_services():
     """
-    应用程序的主要设置逻辑。
-    此函数创建目录、下载二进制文件、启动子进程并生成访问链接。
+    Application main setup logic.
     """
     create_directory()
     cleanup_old_files()
@@ -336,11 +261,114 @@ async def setup_services():
     print(f"Service Domain: {domain}", flush=True)
     print("=" * 60, flush=True)
 
+# --- FastAPI Setup ---
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application startup: Starting setup in background...", flush=True)
+    asyncio.create_task(setup_services())
+    yield
+    print("Application shutdown: Cleaning up processes...", flush=True)
+    await cleanup_processes()
 
-if __name__ == "__main__":
-    # 这部分代码允许在本地运行应用程序以进行测试。
-    # 它使用 uvicorn 来运行 FastAPI 应用，这将正确触发
-    # startup 和 shutdown 事件。
-    print("Starting server locally with Uvicorn...", flush=True)
+app = FastAPI(lifespan=lifespan)
+
+@app.get("/")
+async def root():
+    return "Hello world! python-a-x is running."
+
+@app.get(f"/{S_PATH}")
+async def get_links():
+    content = current_links_content
+    if not content:
+         sub_path = Path(FILE_PATH) / 'sub.txt'
+         if sub_path.exists():
+             try:
+                 async with aiofiles.open(sub_path, 'r') as f:
+                     content = await f.read()
+             except:
+                 pass
+    return Response(content=content or "Links not ready", media_type="text/plain")
+
+# --- Streamlit & Threading Logic ---
+
+def run_fastapi():
+    """Run FastAPI in a separate thread"""
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
+@st.cache_resource
+def start_background_services():
+    """
+    Start FastAPI server (which triggers setup services via lifespan).
+    """
+    # Start FastAPI thread
+    t = threading.Thread(target=run_fastapi, daemon=True)
+    t.start()
+    return t
+
+def get_process_status(process_name):
+    for proc in psutil.process_iter(['name', 'cmdline']):
+        try:
+            if process_name in proc.name() or (proc.cmdline() and any(process_name in cmd for cmd in proc.cmdline())):
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return False
+
+# --- UI Layout ---
+
+st.set_page_config(page_title="Python-A-X Monitor", page_icon="⚡", layout="wide")
+
+# Start services (safe to call multiple times due to @st.cache_resource)
+start_background_services()
+
+st.title("⚡ Python-A-X Streamlit Monitor")
+st.markdown("---")
+
+# Metrics Container
+metrics_placeholder = st.empty()
+info_placeholder = st.empty()
+
+# Refresh loop
+while True:
+    try:
+        # System Metrics
+        cpu_percent = psutil.cpu_percent(interval=None)
+        mem_info = psutil.virtual_memory()
+        net_io = psutil.net_io_counters()
+        
+        with metrics_placeholder.container():
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric(label="CPU Usage", value=f"{cpu_percent}%")
+            with col2:
+                st.metric(label="Memory Usage", value=f"{mem_info.percent}%", delta=f"{mem_info.used / (1024**3):.2f} GB / {mem_info.total / (1024**3):.2f} GB")
+            with col3:
+                st.metric(label="Network Sent/Recv", value=f"{net_io.bytes_sent / (1024**2):.1f} MB / {net_io.bytes_recv / (1024**2):.1f} MB")
+        
+        # Status
+        with info_placeholder.container():
+            st.subheader("System Status")
+            sub_file = Path(FILE_PATH) / 'sub.txt'
+            c1, c2 = st.columns(2)
+            c1.success("Backend Service Running") if get_process_status("backend") else c1.warning("Backend Service Starting/Stopped")
+            c2.success("Front Service Running") if get_process_status("front") else c2.warning("Front Service Starting/Stopped")
+
+            if sub_file.exists():
+                st.markdown("### 🔗 Subscription Link")
+                try:
+                    with open(sub_file, 'r') as f:
+                        content = f.read()
+                    st.code(f"http://localhost:{PORT}/{S_PATH}", language="text")
+                    st.text_area("Base64 Subscription Content", content, height=100)
+                except:
+                    st.error("Error reading subscription file")
+            else:
+                st.info("Waiting for services to initialize... (This may take 10-20 seconds)")
+    
+    except Exception as e:
+        # Catch UI errors to prevent crash
+        st.error(f"UI Error: {e}")
+        
+    time.sleep(2)
+
