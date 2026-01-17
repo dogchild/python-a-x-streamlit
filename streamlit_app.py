@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 import httpx
 import aiofiles
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 from fastapi import FastAPI, Response
 import uvicorn
 from dotenv import load_dotenv
@@ -303,6 +304,7 @@ def start_background_services():
     """
     # Start FastAPI thread
     t = threading.Thread(target=run_fastapi, daemon=True)
+    add_script_run_ctx(t)
     t.start()
     return t
 
